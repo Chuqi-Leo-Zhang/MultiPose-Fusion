@@ -223,6 +223,7 @@ class SpatialVolumeNet(nn.Module):
 
 class SyncMultiviewDiffusion(pl.LightningModule):
     def __init__(self, unet_config, scheduler_config,
+                 elevation_target=30,
                  finetune_unet=False, finetune_projection=True,
                  view_num=16, image_size=256,
                  cfg_scale=3.0, output_num=8, batch_view_num=4,
@@ -230,6 +231,9 @@ class SyncMultiviewDiffusion(pl.LightningModule):
                  clip_image_encoder_path="/apdcephfs/private_rondyliu/projects/clip/ViT-L-14.pt",
                  sample_type='ddim', sample_steps=200):
         super().__init__()
+
+        self.elevation_target = elevation_target
+        print(self.elevation_target)
 
         self.finetune_unet = finetune_unet
         self.finetune_projection = finetune_projection
@@ -271,7 +275,7 @@ class SyncMultiviewDiffusion(pl.LightningModule):
             disable_training_module(self.cc_projection)
 
     def _init_multiview(self):
-        K, azs, _, _, poses = read_pickle(f'meta_info/camera-{self.view_num}.pkl')
+        K, azs, _, _, poses = read_pickle(f'meta_info/camera-{self.view_num}-{self.elevation_target}.pkl')
         default_image_size = 256
         ratio = self.image_size/default_image_size
         K = np.diag([ratio,ratio,1]) @ K
@@ -292,7 +296,7 @@ class SyncMultiviewDiffusion(pl.LightningModule):
         azimuth_input = self.azimuth[0].unsqueeze(0) # 1
         azimuth_target = self.azimuth # N
         elevation_input = -elevation_ref # note that zero123 use a negative elevation here!!!
-        elevation_target = -np.deg2rad(30)
+        elevation_target = -np.deg2rad(self.elevation_target)
         d_e = elevation_target - elevation_input # B
         N = self.azimuth.shape[0]
         B = batch_size
