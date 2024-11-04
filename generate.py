@@ -26,8 +26,8 @@ def main():
     parser.add_argument('--ckpt',type=str, default='ckpt/syncdreamer-step80k.ckpt')
     parser.add_argument('--output', type=str, required=True)
     parser.add_argument('--input', type=str, required=True)
-    parser.add_argument('--elevation_input', type=int, default=30, required=True)
-    parser.add_argument('--elevation_target', type=int, required=True)
+    parser.add_argument('--elevation', type=int, default=30)
+    parser.add_argument('--elevation_target', type=int, default=30)
 
     parser.add_argument('--sample_num', type=int, default=4)
     parser.add_argument('--crop_size', type=int, default=-1)
@@ -47,7 +47,7 @@ def main():
     Path(f'{flags.output}').mkdir(exist_ok=True, parents=True)
 
     # prepare data
-    data = prepare_inputs(flags.input, flags.elevation_input, flags.crop_size)
+    data = prepare_inputs(flags.input, flags.elevation, flags.crop_size)
     for k, v in data.items():
         data[k] = v.unsqueeze(0).cuda()
         data[k] = torch.repeat_interleave(data[k], flags.sample_num, dim=0)
