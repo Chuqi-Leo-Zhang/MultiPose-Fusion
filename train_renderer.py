@@ -1,4 +1,5 @@
 import argparse
+import os
 
 import imageio
 import numpy as np
@@ -27,51 +28,54 @@ class ResumeCallBacks(Callback):
     def on_train_start(self, trainer, pl_module):
         pl_module.optimizers().param_groups = pl_module.optimizers()._optimizer.param_groups
 
-def render_images(model, output,):
+def render_images(model, output, view_elevations=[30]):
     # render from model
+    imgs = []
     n = 180
     azimuths = (np.arange(n) / n * np.pi * 2).astype(np.float32)
-    elevations = np.deg2rad(np.asarray([30] * n).astype(np.float32))
-    K, _, _, _, poses = read_pickle(f'meta_info/camera-16.pkl')
-    output_points
-    h, w = 256, 256
-    default_size = 256
-    K = np.diag([w/default_size,h/default_size,1.0]) @ K
-    imgs = []
-    for ni in tqdm(range(n)):
-        # R = euler2mat(azimuths[ni], elevations[ni], 0, 'szyx')
-        # R = np.asarray([[0,-1,0],[0,0,-1],[1,0,0]]) @ R
-        e, a = elevations[ni], azimuths[ni]
-        row1 = np.asarray([np.sin(e)*np.cos(a),np.sin(e)*np.sin(a),-np.cos(e)])
-        row0 = np.asarray([-np.sin(a),np.cos(a), 0])
-        row2 = np.cross(row0, row1)
-        R = np.stack([row0,row1,row2],0)
-        t = np.asarray([0,0,1.5])
-        pose = np.concatenate([R,t[:,None]],1)
-        pose_ = torch.from_numpy(pose.astype(np.float32)).unsqueeze(0)
-        K_ = torch.from_numpy(K.astype(np.float32)).unsqueeze(0) # [1,3,3]
+    for elevation in view_elevations:
 
-        coords = torch.stack(torch.meshgrid(torch.arange(h), torch.arange(w)), -1)[:, :, (1, 0)]  # h,w,2
-        coords = coords.float()[None, :, :, :].repeat(1, 1, 1, 1)  # imn,h,w,2
-        coords = coords.reshape(1, h * w, 2)
-        coords = torch.cat([coords, torch.ones(1, h * w, 1, dtype=torch.float32)], 2)  # imn,h*w,3
+        elevations = np.deg2rad(np.asarray([elevation] * n).astype(np.float32))
+        K, _, _, _, poses = read_pickle(f'meta_info/camera-16-{elevation}.pkl')
+        output_points
+        h, w = 256, 256
+        default_size = 256
+        K = np.diag([w/default_size,h/default_size,1.0]) @ K
+        
+        for ni in tqdm(range(n)):
+            # R = euler2mat(azimuths[ni], elevations[ni], 0, 'szyx')
+            # R = np.asarray([[0,-1,0],[0,0,-1],[1,0,0]]) @ R
+            e, a = elevations[ni], azimuths[ni]
+            row1 = np.asarray([np.sin(e)*np.cos(a),np.sin(e)*np.sin(a),-np.cos(e)])
+            row0 = np.asarray([-np.sin(a),np.cos(a), 0])
+            row2 = np.cross(row0, row1)
+            R = np.stack([row0,row1,row2],0)
+            t = np.asarray([0,0,1.5])
+            pose = np.concatenate([R,t[:,None]],1)
+            pose_ = torch.from_numpy(pose.astype(np.float32)).unsqueeze(0)
+            K_ = torch.from_numpy(K.astype(np.float32)).unsqueeze(0) # [1,3,3]
 
-        # imn,h*w,3 @ imn,3,3 => imn,h*w,3
-        rays_d = coords @ torch.inverse(K_).permute(0, 2, 1)
-        R, t = pose_[:, :, :3], pose_[:, :, 3:]
-        rays_d = rays_d @ R
-        rays_d = F.normalize(rays_d, dim=-1)
-        rays_o = -R.permute(0, 2, 1) @ t  # imn,3,3 @ imn,3,1
-        rays_o = rays_o.permute(0, 2, 1).repeat(1, h * w, 1)  # imn,h*w,3
+            coords = torch.stack(torch.meshgrid(torch.arange(h), torch.arange(w)), -1)[:, :, (1, 0)]  # h,w,2
+            coords = coords.float()[None, :, :, :].repeat(1, 1, 1, 1)  # imn,h,w,2
+            coords = coords.reshape(1, h * w, 2)
+            coords = torch.cat([coords, torch.ones(1, h * w, 1, dtype=torch.float32)], 2)  # imn,h*w,3
 
-        ray_batch = {
-            'rays_o': rays_o.reshape(-1,3).cuda(),
-            'rays_d': rays_d.reshape(-1,3).cuda(),
-        }
-        with torch.no_grad():
-            image = model.renderer.render(ray_batch,False,5000)['rgb'].reshape(h,w,3)
-        image = (image.cpu().numpy() * 255).astype(np.uint8)
-        imgs.append(image)
+            # imn,h*w,3 @ imn,3,3 => imn,h*w,3
+            rays_d = coords @ torch.inverse(K_).permute(0, 2, 1)
+            R, t = pose_[:, :, :3], pose_[:, :, 3:]
+            rays_d = rays_d @ R
+            rays_d = F.normalize(rays_d, dim=-1)
+            rays_o = -R.permute(0, 2, 1) @ t  # imn,3,3 @ imn,3,1
+            rays_o = rays_o.permute(0, 2, 1).repeat(1, h * w, 1)  # imn,h*w,3
+
+            ray_batch = {
+                'rays_o': rays_o.reshape(-1,3).cuda(),
+                'rays_d': rays_d.reshape(-1,3).cuda(),
+            }
+            with torch.no_grad():
+                image = model.renderer.render(ray_batch,False,5000)['rgb'].reshape(h,w,3)
+            image = (image.cpu().numpy() * 255).astype(np.uint8)
+            imgs.append(image)
 
     imageio.mimsave(f'{output}/rendering.mp4', imgs, fps=30)
 
@@ -118,7 +122,8 @@ def extract_mesh(model, output, resolution=512):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('-i', '--image_path', type=str, required=True)
+    # parser.add_argument('-i', '--image_path', nargs=, required=True)
+    parser.add_argument('-i', '--image_path', nargs='+', required=True)
     parser.add_argument('-n', '--name', type=str, required=True)
     parser.add_argument('-b', '--base', type=str, default='configs/neus.yaml')
     parser.add_argument('-l', '--log', type=str, default='output/renderer')
@@ -126,6 +131,7 @@ def main():
     parser.add_argument('-g', '--gpus', type=str, default='0,')
     parser.add_argument('-r', '--resume', action='store_true', default=False, dest='resume')
     parser.add_argument('--fp16', action='store_true', default=False, dest='fp16')
+    parser.add_argument('-e', '--elevation', nargs='+', default=[30])
     opt = parser.parse_args()
     # seed_everything(opt.seed)
 
@@ -133,8 +139,13 @@ def main():
     cfg = OmegaConf.load(opt.base)
     name = opt.name
     log_dir, ckpt_dir = Path(opt.log) / name, Path(opt.log) / name / 'ckpt'
+    # image_path = []
+    # for e in opt.elevation:
+    #     image_path.append(os.path.join(opt.image_path+"_"+str(e), "3.png"))
+    # image_path = [opt.image_path]
     cfg.model.params['image_path'] = opt.image_path
     cfg.model.params['log_dir'] = log_dir
+    cfg.model.params['elevation'] = opt.elevation
 
     # setup
     log_dir.mkdir(exist_ok=True, parents=True)
@@ -149,7 +160,7 @@ def main():
     data.prepare_data()
     data.setup('fit')
 
-    model = instantiate_from_config(model_config,)
+    model = instantiate_from_config(model_config)
     model.cpu()
     model.learning_rate = model_config.base_lr
 
@@ -180,7 +191,7 @@ def main():
 
     model = model.cuda().eval()
 
-    render_images(model, log_dir)
+    render_images(model, log_dir, opt.elevation)
     extract_mesh(model, log_dir)
 
 if __name__=="__main__":

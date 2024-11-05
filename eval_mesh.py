@@ -21,7 +21,7 @@ def read_depth_objaverse(depth_fn):
     mask = (depth > DEPTH_VALID_MIN) & (depth < DEPTH_VALID_MAX)
     return depth, mask
 
-K, _, _, _, POSES = read_pickle(f'meta_info/camera-16.pkl')
+K, _, _, _, POSES = read_pickle(f'meta_info/camera-16-30.pkl')
 H, W, NUM_IMAGES = 256, 256, 16
 CACHE_DIR = './eval_mesh_pts'
 
@@ -45,7 +45,7 @@ def rasterize_depth_map(mesh,pose,K,shape):
     rast, _ = dr.rasterize(ctx, pts_clip, indices, (h, w)) # [1,h,w,4]
     depth = (rast[0,:,:,2]+1)/2*(far-near)+near
     mask = rast[0,:,:,-1]!=0
-    return depth.cpu().numpy(), mask.cpu().numpy().astype(np.bool)
+    return depth.cpu().numpy(), mask.cpu().numpy().astype(bool)
 
 def ds_and_save(cache_dir, name, pts, cache=False):
     cache_dir.mkdir(exist_ok=True, parents=True)
@@ -187,7 +187,7 @@ def main():
 
     results = f'{args.pr_name}\t{chamfer:.5f}\t{iou:.5f}'
     print(results)
-    with open('/cfs-cq-dcc/rondyliu/geometry.log','a') as f:
+    with open('log/geometry.log','a') as f:
         f.write(results+'\n')
 
 if __name__=="__main__":

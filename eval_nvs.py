@@ -63,7 +63,7 @@ def main():
 
     msg=f'{args.name}\t{np.mean(psnrs):.5f}\t{np.mean(ssims):.5f}\t{np.mean(lpipss):.5f}'
     print(msg)
-    with open('/cfs-cq-dcc/rondyliu/nvs.log','a') as f:
+    with open('log/nvs.log','a') as f:
         f.write(msg+'\n')
 
 
