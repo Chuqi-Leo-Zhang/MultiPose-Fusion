@@ -274,7 +274,7 @@ class AdamWwithEMAandWings(optim.Optimizer):
 
         return loss
 
-def prepare_inputs(image_path, elevation_input, crop_size=-1, image_size=256):
+def prepare_inputs(image_path, elevation_input, azimuth, crop_size=-1, image_size=256):
     image_input = Image.open(image_path)
 
     if crop_size!=-1:
@@ -301,4 +301,5 @@ def prepare_inputs(image_path, elevation_input, crop_size=-1, image_size=256):
     image_input = image_input[:, :, :3] * 2.0 - 1.0
     image_input = torch.from_numpy(image_input.astype(np.float32))
     elevation_input = torch.from_numpy(np.asarray([np.deg2rad(elevation_input)], np.float32))
-    return {"input_image": image_input, "input_elevation": elevation_input}
+    azimuth_input = torch.from_numpy(np.asarray([np.deg2rad(azimuth)], np.float32))
+    return {"input_image": image_input, "input_elevation": elevation_input, "input_azimuth": azimuth_input}

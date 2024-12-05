@@ -8,6 +8,7 @@ import numpy as np
 from skimage.io import imsave
 from torch.optim.lr_scheduler import LambdaLR
 from tqdm import tqdm
+import math
 
 from ldm.base_utils import read_pickle, concat_images_list
 from ldm.models.diffusion.sync_dreamer_utils import get_warp_coordinates, create_target_volume
@@ -15,6 +16,8 @@ from ldm.models.diffusion.sync_dreamer_network import NoisyTargetViewEncoder, Sp
 from ldm.modules.diffusionmodules.util import make_ddim_timesteps, timestep_embedding
 from ldm.modules.encoders.modules import FrozenCLIPImageEmbedder
 from ldm.util import instantiate_from_config
+
+from spad.geometry import generate_batch
 
 def disabled_train(self, mode=True):
     """Overwrite model.train with this function to make sure train/eval mode
@@ -63,7 +66,7 @@ class UNetWrapper(nn.Module):
             raise NotImplementedError
         return drop_clip, drop_volume, drop_concat, drop_all
 
-    def forward(self, x, t, clip_embed, volume_feats, x_concat, is_train=False):
+    def forward(self, x, t, clip_embed, volume_feats, x_concat, is_train=False, att_masks=None, plucker_embeds=None):
         """
 
         @param x:             B,4,H,W
@@ -97,7 +100,7 @@ class UNetWrapper(nn.Module):
             x_concat_ = x_concat
 
         x = torch.cat([x, x_concat_], 1)
-        pred = self.diffusion_model(x, t, clip_embed, source_dict=volume_feats)
+        pred = self.diffusion_model(x, t, clip_embed, source_dict=volume_feats, att_masks=att_masks, plucker_embeds=plucker_embeds)
         return pred
 
     def predict_with_unconditional_scale(self, x, t, clip_embed, volume_feats, x_concat, unconditional_scale):
@@ -223,13 +226,13 @@ class SpatialVolumeNet(nn.Module):
 
 class SyncMultiviewDiffusion(pl.LightningModule):
     def __init__(self, unet_config, scheduler_config,
-                 elevation_target=30,
                  finetune_unet=False, finetune_projection=True,
                  view_num=16, image_size=256,
                  cfg_scale=3.0, output_num=8, batch_view_num=4,
                  drop_conditions=False, drop_scheme='default',
                  clip_image_encoder_path="/apdcephfs/private_rondyliu/projects/clip/ViT-L-14.pt",
-                 sample_type='ddim', sample_steps=200):
+                 sample_type='ddim', sample_steps=200,
+                 elevation_target=30):
         super().__init__()
 
         self.elevation_target = elevation_target
@@ -287,24 +290,53 @@ class SyncMultiviewDiffusion(pl.LightningModule):
         azs = (azs + np.pi) % (np.pi * 2) - np.pi # scale to [-pi,pi] and the index=0 has az=0
         self.register_buffer('azimuth', torch.from_numpy(azs.astype(np.float32)))
 
-    def get_viewpoint_embedding(self, batch_size, elevation_ref):
+    def get_viewpoint_embedding(self, batch_size, input_elevation, target_elevation, input_azimuth):
         """
         @param batch_size:
         @param elevation_ref: B
         @return:
         """
-        azimuth_input = self.azimuth[0].unsqueeze(0) # 1
-        azimuth_target = self.azimuth # N
-        elevation_input = -elevation_ref # note that zero123 use a negative elevation here!!!
-        elevation_target = -np.deg2rad(self.elevation_target)
-        d_e = elevation_target - elevation_input # B
+        # azimuth_input = self.azimuth[0].unsqueeze(0) # 1
+        # azimuth_target = self.azimuth # N
+        # elevation_input = -elevation_ref # note that zero123 use a negative elevation here!!!
+        # elevation_target = -np.deg2rad(self.elevation_target)
+        # d_e = elevation_target - elevation_input # B
+        # N = self.azimuth.shape[0]
+        # B = batch_size
+        # d_e = d_e.unsqueeze(1).repeat(1, N)
+        # d_a = azimuth_target - azimuth_input # N
+        # d_a = d_a.unsqueeze(0).repeat(B, 1)
+        # d_z = torch.zeros_like(d_a)
+        # embedding = torch.stack([d_e, torch.sin(d_a), torch.cos(d_a), d_z], -1) # B,N,4
+
         N = self.azimuth.shape[0]
-        B = batch_size
+        B = batch_size  
+        input_elevation = -input_elevation # B
+        target_elevation = -target_elevation # B
+        d_e = target_elevation - input_elevation # B
         d_e = d_e.unsqueeze(1).repeat(1, N)
-        d_a = azimuth_target - azimuth_input # N
-        d_a = d_a.unsqueeze(0).repeat(B, 1)
+
+        input_azimuth = input_azimuth.unsqueeze(1).repeat(1, N) # B,N   
+        target_azimuth = self.azimuth.unsqueeze(0).repeat(B, 1) # N
+        d_a = target_azimuth - input_azimuth # B,N
+
         d_z = torch.zeros_like(d_a)
         embedding = torch.stack([d_e, torch.sin(d_a), torch.cos(d_a), d_z], -1) # B,N,4
+        
+
+        # input_azimuth = self.azimuth[0].unsqueeze(0) # 1
+        # target_azimuth = self.azimuth # N
+        # input_elevation = -input_elevation # B
+        # target_elevation = -target_elevation # B
+        # d_e = target_elevation - input_elevation # B
+        # N = self.azimuth.shape[0]
+        # B = batch_size
+        # d_e = d_e.repeat(B, N)
+        # d_a = target_azimuth - input_azimuth # N
+        # d_a = d_a.unsqueeze(0).repeat(B, 1) 
+        # d_z = torch.zeros_like(d_a)
+        # embedding = torch.stack([d_e, torch.sin(d_a), torch.cos(d_a), d_z], -1) # B,N,4
+
         return embedding
 
     def _init_first_stage(self):
@@ -360,6 +392,7 @@ class SyncMultiviewDiffusion(pl.LightningModule):
         self.register_buffer("posterior_variance", posterior_variance.float())
         self.register_buffer('posterior_log_variance_clipped', posterior_log_variance_clipped.float())
 
+
     def _init_time_step_embedding(self):
         self.time_embed_dim = 256
         self.time_embed = nn.Sequential(
@@ -393,8 +426,13 @@ class SyncMultiviewDiffusion(pl.LightningModule):
 
         image_input = batch['input_image'].permute(0, 3, 1, 2)
         elevation_input = batch['input_elevation'][:, 0] # b
+        azimuth_input = batch['input_azimuth'][:, 0] # b
+        elevation_output = batch['target_elevation'][:,:] # B,N
+        azimuth_output = batch['target_azimuth'][:,:] # B,N
         x_input = self.encode_first_stage(image_input)
-        input_info = {'image': image_input, 'elevation': elevation_input, 'x': x_input}
+        input_info = {'image': image_input, 'input_elevation': elevation_input,\
+                      'x': x_input, 'input_azimuth': azimuth_input,\
+                      'target_elevation': elevation_output, 'target_azimuth': azimuth_output}
         with torch.no_grad():
             clip_embed = self.clip_image_encoder.encode(image_input)
         return x, clip_embed, input_info
@@ -435,18 +473,36 @@ class SyncMultiviewDiffusion(pl.LightningModule):
 
         x, clip_embed, input_info = self.prepare(batch)
         x_noisy, noise = self.add_noise(x, time_steps)  # B,N,4,H,W
+        
 
         N = self.view_num
         target_index = torch.randint(0, N, (B, 1), device=self.device).long() # B, 1
-        v_embed = self.get_viewpoint_embedding(B, input_info['elevation']) # N,v_dim
+
+        ## added for plucker embedding
+        input_elev, target_elev = input_info['input_elevation'].to("cpu"), input_info['target_elevation'][torch.arange(B)[:,None], target_index][:,0].to("cpu")
+        input_azim, target_azim = input_info['input_azimuth'].to("cpu"), input_info['target_azimuth'][torch.arange(B)[:,None], target_index][:,0].to("cpu")
+        
+        att_masks, plucker_embeds = [], [] 
+        for i in range(B):
+            elevations = [target_elev[i], input_elev[i]]
+            azimuths = [target_azim[i], input_azim[i]]
+            plc_batch = generate_batch(elevations, azimuths)
+            att_masks_, plucker_embeds_ = plc_batch["epi_constraint_masks"], plc_batch["plucker_embeds"]
+            att_masks.append(att_masks_)
+            plucker_embeds.append(plucker_embeds_)
+        att_masks = torch.stack(att_masks).to(self.device)
+        plucker_embeds = torch.stack(plucker_embeds).to(self.device)
+
+        # target_index = target_index.repeat(B, 1) # B,1
+        v_embed = self.get_viewpoint_embedding(B, input_elev.to(self.device), target_elev.to(self.device), input_azim.to(self.device)) # N,v_dim
 
         t_embed = self.embed_time(time_steps)
         spatial_volume = self.spatial_volume.construct_spatial_volume(x_noisy, t_embed, v_embed, self.poses, self.Ks)
 
         clip_embed, volume_feats, x_concat = self.get_target_view_feats(input_info['x'], spatial_volume, clip_embed, t_embed, v_embed, target_index)
 
-        x_noisy_ = x_noisy[torch.arange(B)[:,None],target_index][:,0] # B,4,H,W
-        noise_predict = self.model(x_noisy_, time_steps, clip_embed, volume_feats, x_concat, is_train=True) # B,4,H,W
+        x_noisy_ = x_noisy[torch.arange(B)[:,None], target_index][:,0] # B,4,H,W
+        noise_predict = self.model(x_noisy_, time_steps, clip_embed, volume_feats, x_concat, is_train=True, att_masks=att_masks, plucker_embeds=plucker_embeds) # B,4,H,W
 
         noise_target = noise[torch.arange(B)[:,None],target_index][:,0] # B,4,H,W
         # loss simple for diffusion
@@ -608,7 +664,7 @@ class SyncDDIMSampler:
         @param is_step0:         bool
         @return:
         """
-        x_input, elevation_input = input_info['x'], input_info['elevation']
+        x_input, elevation_input = input_info['x'], input_info['input_elevation']
         B, N, C, H, W = x_target_noisy.shape
 
         # construct source data

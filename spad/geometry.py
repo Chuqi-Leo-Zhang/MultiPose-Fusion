@@ -196,6 +196,10 @@ def compute_epipolar_mask(src_frame, tgt_frame, imh, imw, dialate_mask=True, deb
 
 def get_opencv_from_blender(matrix_world, fov, image_size):
     # convert matrix_world to opencv format extrinsics
+    # try:
+    #     opencv_world_to_cam = matrix_world.inverse()
+    # except: 
+    #     opencv_world_to_cam = matrix_world.pinverse()
     opencv_world_to_cam = matrix_world.inverse()
     opencv_world_to_cam[1, :] *= -1
     opencv_world_to_cam[2, :] *= -1
@@ -263,8 +267,7 @@ def look_at(eye, center, up):
     # Create a normalized right vector
     up_norm = np.array(up) / np.linalg.norm(up)
     s = np.cross(f, up_norm)
-    s /= np.linalg.norm(s)
-
+    s /= (np.linalg.norm(s))
     # Recompute the up vector
     u = np.cross(s, f)
 
@@ -341,6 +344,7 @@ def get_batch_from_spherical(elevations, azimuths, fov=0.8575560548920328, image
             first_frame = edict({"fov": fov}); second_frame = edict({"fov": fov})
             first_frame["camera"] = get_blender_from_spherical(elevation=icam[0], azimuth=icam[1])
             second_frame["camera"] = get_blender_from_spherical(elevation=jcam[0], azimuth=jcam[1])
+
             first_mask, second_mask, first_plucker, second_plucker = get_mask_and_plucker(first_frame, second_frame, latent_size, dialate_mask=True)
 
             batch_attention_masks[i, j], batch_attention_masks[j, i] = first_mask, second_mask
@@ -384,7 +388,7 @@ def get_batch_from_spherical_sync(elevations, azimuths, fov=0.8575560548920328, 
     
     plucker_embeds = torch.stack(plucker_embeds)
     batch_attention_masks = rearrange(batch_attention_masks, 'n b1 b2 h w -> n b1 (b2 h) (b2 w)')
-    return batch_attention_masks, plucker_embeds
+    # return batch_attention_masks, plucker_embeds
 
     # organize as batch
     batch = {}

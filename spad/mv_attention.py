@@ -163,7 +163,8 @@ class SPADTransformerBlock(nn.Module):
 
         # cross-attention (to individual views)
         x = rearrange(x, "n v hw c -> (n v) hw c")
-        context = rearrange(context, "n v seq d -> (n v) seq d")
+        if context is not None:
+            context = rearrange(context, "n v seq d -> (n v) seq d")
         x = self.attn2(self.norm2(x), context=context) + x
         x = self.ff(self.norm3(x)) + x
         x = rearrange(x, "(n v) hw c -> n v hw c", v=v)
@@ -273,7 +274,8 @@ class SPADTransformer(nn.Module):
             - plucker_coords: tensor of shape [n, v, dim (6), h (32), w (32)]
         """
         x = rearrange(x, "n (v c) h w -> n v c h w", v=2)
-        # context = context[:, None, ...].repeat_interleave(2, dim=1)
+        if context is not None:
+            context = context[:, None, ...].repeat_interleave(2, dim=1)
         # print(f"x.shape: {x.shape}")
         # print(f"plucker_embeds.shape: {plucker_embeds.shape}")
         # print(f"context.shape: {context.shape}")

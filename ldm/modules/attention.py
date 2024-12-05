@@ -333,4 +333,4 @@ class SpatialTransformer(nn.Module):
             x = block(x, context=context)
         x = rearrange(x, 'b (h w) c -> b c h w', h=h, w=w).contiguous()
         x = self.proj_out(x)
-        return x + x_in
+        return x, x_in

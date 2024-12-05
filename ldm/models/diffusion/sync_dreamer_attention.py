@@ -115,21 +115,24 @@ class DepthWiseAttention(UNetModel):
         self.output_conditions.append(DepthTransformer(ch, 4, d0 // 2, context_dim=d0)) # 8
 
     def forward(self, x, timesteps=None, context=None, source_dict=None, **kwargs):
+        att_masks = kwargs.get('att_masks', None).type(self.dtype)
+        plucker_embeds = kwargs.get('plucker_embeds', None).type(self.dtype)
+        
         hs = []
         t_emb = timestep_embedding(timesteps, self.model_channels, repeat_only=False)
         emb = self.time_embed(t_emb)
 
         h = x.type(self.dtype)
         for index, module in enumerate(self.input_blocks):
-            h = module(h, emb, context)
+            h = module(h, emb, context, att_masks, plucker_embeds)
             hs.append(h)
 
-        h = self.middle_block(h, emb, context)
+        h = self.middle_block(h, emb, context, att_masks, plucker_embeds)
         h = self.middle_conditions(h, context=source_dict[h.shape[-1]])
 
         for index, module in enumerate(self.output_blocks):
             h = torch.cat([h, hs.pop()], dim=1)
-            h = module(h, emb, context)
+            h = module(h, emb, context, att_masks, plucker_embeds)
             if index in self.output_b2c:
                 layer = self.output_conditions[self.output_b2c[index]]
                 h = layer(h, context=source_dict[h.shape[-1]])

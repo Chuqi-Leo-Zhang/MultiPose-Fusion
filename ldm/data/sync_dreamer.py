@@ -16,6 +16,7 @@ import torchvision
 from einops import rearrange
 
 from ldm.util import prepare_inputs
+from spad.geometry import generate_batch
 
 
 class SyncDreamerTrainData(Dataset):
@@ -26,12 +27,14 @@ class SyncDreamerTrainData(Dataset):
         self.input_dir = Path(input_dir)
 
         self.uids = read_pickle(uid_set_pkl)
+
         print('============= length of dataset %d =============' % len(self.uids))
 
         image_transforms = []
         image_transforms.extend([transforms.ToTensor(), transforms.Lambda(lambda x: rearrange(x * 2. - 1., 'c h w -> h w c'))])
         self.image_transforms = torchvision.transforms.Compose(image_transforms)
         self.num_images = 16
+        
 
     def __len__(self):
         return len(self.uids)
@@ -58,24 +61,56 @@ class SyncDreamerTrainData(Dataset):
         target_dir = os.path.join(self.target_dir, self.uids[index])
         input_dir = os.path.join(self.input_dir, self.uids[index])
 
-        views = np.arange(0, self.num_images)
-        start_view_index = np.random.randint(0, self.num_images)
-        views = (views + start_view_index) % self.num_images
-
-        target_images = []
-        for si, target_index in enumerate(views):
-            img = self.load_index(target_dir, target_index)
-            target_images.append(img)
-        target_images = torch.stack(target_images, 0)
-        input_img = self.load_index(input_dir, start_view_index)
-
-        K, azimuths, elevations, distances, cam_poses = read_pickle(os.path.join(input_dir, f'meta.pkl'))
-        input_elevation = torch.from_numpy(elevations[start_view_index:start_view_index+1].astype(np.float32))
-        return {"target_image": target_images, "input_image": input_img, "input_elevation": input_elevation}
+        return {"target_image_dir": target_dir, "input_image_dir": input_dir}
 
     def __getitem__(self, index):
         data = self.get_data_for_index(index)
         return data
+    
+    def collate_fn(self, batch):
+        target_images_dir = [item['target_image_dir'] for item in batch]
+        input_images_dir = [item['input_image_dir'] for item in batch]
+
+
+        views = np.arange(0, self.num_images)
+        
+        start_view_index = np.random.randint(0, self.num_images) 
+        views = (views + start_view_index) % self.num_images
+
+        batch_target = []
+        batch_input = []
+        batch_input_elevation = []
+        batch_input_azimuth = []
+        batch_target_elevation = []
+        batch_target_azimuth = []
+
+        for target_dir, input_dir in zip(target_images_dir, input_images_dir):
+            target_images = []
+            for si, target_index in enumerate(views):
+                img = self.load_index(target_dir, target_index)
+                target_images.append(img)
+            
+            target_images = torch.stack(target_images, 0)
+            batch_target.append(target_images)
+            input_img = self.load_index(input_dir, start_view_index)
+            batch_input.append(input_img)
+
+            K, azimuths, elevations, distances, cam_poses = read_pickle(os.path.join(target_dir, f'meta.pkl'))
+            target_elevation = torch.from_numpy(elevations.astype(np.float32))
+            target_azimuth = torch.from_numpy(azimuths.astype(np.float32))
+            batch_target_elevation.append(target_elevation) 
+            batch_target_azimuth.append(target_azimuth) 
+
+            K, azimuths, elevations, distances, cam_poses = read_pickle(os.path.join(input_dir, f'meta.pkl'))
+            input_elevation = torch.from_numpy(elevations[start_view_index:start_view_index+1].astype(np.float32))
+            input_azimuth = torch.from_numpy(azimuths[start_view_index:start_view_index+1].astype(np.float32))
+            batch_input_elevation.append(input_elevation)
+            batch_input_azimuth.append(input_azimuth)
+    
+        return {"target_image": torch.stack(batch_target, 0), "input_image": torch.stack(batch_input, 0),\
+                "input_elevation": torch.stack(batch_input_elevation, 0), "input_azimuth": torch.stack(batch_input_azimuth, 0),\
+                "target_elevation": torch.stack(batch_target_elevation, 0), "target_azimuth": torch.stack(batch_target_azimuth, 0)}
+
 
 class SyncDreamerEvalData(Dataset):
     def __init__(self, image_dir):
@@ -95,7 +130,9 @@ class SyncDreamerEvalData(Dataset):
     def get_data_for_index(self, index):
         input_img_fn = self.fns[index]
         elevation = int(Path(input_img_fn).stem.split('-')[-1])
-        return prepare_inputs(input_img_fn, elevation, 200)
+        # azimuth = int(Path(input_img_fn).stem.split('-')[-2])
+        azimuth = 0
+        return prepare_inputs(input_img_fn, elevation, azimuth, 200)
 
     def __getitem__(self, index):
         return self.get_data_for_index(index)
@@ -122,7 +159,8 @@ class SyncDreamerDataset(pl.LightningDataModule):
 
     def train_dataloader(self):
         sampler = DistributedSampler(self.train_dataset, seed=self.seed)
-        return wds.WebLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False, sampler=sampler)
+        return wds.WebLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False, sampler=sampler, collate_fn=self.train_dataset.collate_fn)
+        # return wds.WebLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False, sampler=sampler)
 
     def val_dataloader(self):
         loader = wds.WebLoader(self.val_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False)

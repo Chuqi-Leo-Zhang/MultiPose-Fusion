@@ -18,6 +18,7 @@ from ldm.modules.diffusionmodules.util import (
     timestep_embedding,
 )
 from ldm.modules.attention import SpatialTransformer
+from spad.mv_attention import SPADTransformer
 from ldm.util import exists
 
 
@@ -28,7 +29,22 @@ def convert_module_to_f16(x):
 def convert_module_to_f32(x):
     pass
 
+class DoubleTransformer(nn.Module):
 
+    def __init__(self, in_channels, n_heads, d_head,
+                 depth=1, dropout=0., context_dim=None,
+                 disable_self_attn=False):
+        super().__init__()
+        self.layer1 = SPADTransformer(in_channels // 2, n_heads, d_head, depth=depth, context_dim=context_dim, disable_self_attn=disable_self_attn)     
+        self.layer2 = SpatialTransformer(in_channels, n_heads, d_head, depth=depth, context_dim=context_dim, disable_self_attn=disable_self_attn)
+    
+    def forward(self, x, context=None, att_masks=None, plucker_embdeds=None):
+        x_out1, _ = self.layer1(x, context, att_masks, plucker_embdeds)
+        x_out2, _ = self.layer2(x, context)    
+        x = x_out1 + x_out2 + x
+        x = x_out2 + x
+        return x  
+    
 ## go
 class AttentionPool2d(nn.Module):
     """
@@ -78,12 +94,14 @@ class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
     support it as an extra input.
     """
 
-    def forward(self, x, emb, context=None):
+    def forward(self, x, emb, context=None, att_masks=None, plucker_embdeds=None):
         for layer in self:
             if isinstance(layer, TimestepBlock):
                 x = layer(x, emb)
             elif isinstance(layer, SpatialTransformer):
                 x = layer(x, context)
+            elif isinstance(layer, DoubleTransformer):
+                x = layer(x, context, att_masks, plucker_embdeds)   
             else:
                 x = layer(x)
         return x
@@ -581,7 +599,7 @@ class UNetModel(nn.Module):
                                 num_heads=num_heads,
                                 num_head_channels=dim_head,
                                 use_new_attention_order=use_new_attention_order,
-                            ) if not use_spatial_transformer else SpatialTransformer(
+                            ) if not use_spatial_transformer else DoubleTransformer(
                                 ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim,
                                 disable_self_attn=disabled_sa
                             )
@@ -637,7 +655,7 @@ class UNetModel(nn.Module):
                 num_heads=num_heads,
                 num_head_channels=dim_head,
                 use_new_attention_order=use_new_attention_order,
-            ) if not use_spatial_transformer else SpatialTransformer(  # always uses a self-attn
+            ) if not use_spatial_transformer else DoubleTransformer(  # always uses a self-attn
                             ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim
                         ),
             ResBlock(
@@ -689,7 +707,7 @@ class UNetModel(nn.Module):
                                 num_heads=num_heads_upsample,
                                 num_head_channels=dim_head,
                                 use_new_attention_order=use_new_attention_order,
-                            ) if not use_spatial_transformer else SpatialTransformer(
+                            ) if not use_spatial_transformer else DoubleTransformer(
                                 ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim,
                                 disable_self_attn=disabled_sa
                             )
