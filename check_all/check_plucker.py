@@ -11,7 +11,7 @@ from pathlib import Path
 from easydict import EasyDict as edict
 from einops import rearrange
 
-# from ldm.base_utils import read_pickle, pose_inverse
+
 import torchvision.transforms as transforms
 import torchvision
 
@@ -116,7 +116,6 @@ def prepare(batch):
         return input_info
 
 def generate_batch(elevations=[45,45,45,45], azimuths=[0,90,180,270], use_abs=False):
-    # elevations = [math.radians(e) for e in elevations]; azimuths = [math.radians(a) for a in azimuths]
 
     # assert first frame is identity
     batch = get_batch_from_spherical(elevations, azimuths)

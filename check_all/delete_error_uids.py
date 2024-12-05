@@ -28,6 +28,5 @@ def run_delete_error_uids(base_path="training"):
             shutil.rmtree(os.path.join(target_path, uid))
             all_uids.remove(uid)
 
-
     write_pickle_file(os.path.join(base_path, 'uid_set.pkl'), all_uids)
     os.remove(os.path.join(base_path, 'error_uids.pkl'))

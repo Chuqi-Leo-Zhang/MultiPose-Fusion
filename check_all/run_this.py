@@ -2,8 +2,6 @@ from check_data import run_check_data
 from check_plucker import run_check_plucker
 from delete_error_uids import run_delete_error_uids
 
-
-
 if __name__ == "__main__":  
 
     error_num = 1

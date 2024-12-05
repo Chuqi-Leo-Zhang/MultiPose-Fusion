@@ -56,5 +56,3 @@ def run_check_data(base_path="training"):
     print(len(uids))    
     save_pickle(uids, os.path.join(base_path, "uid_set.pkl"))
 
-
-# scp -r /Users/chuqizhang/Desktop/our_script/empty zhuominc@lovelace.ece.local.cmu.edu:/home/zhuominc/leo/SyncDreamerCustomized/
