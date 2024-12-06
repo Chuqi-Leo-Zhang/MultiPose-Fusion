@@ -100,10 +100,16 @@ class UNetWrapper(nn.Module):
             x_concat_ = x_concat
 
         x = torch.cat([x, x_concat_], 1)
+        # print(x.shape, att_masks.shape, plucker_embeds.shape)
         pred = self.diffusion_model(x, t, clip_embed, source_dict=volume_feats, att_masks=att_masks, plucker_embeds=plucker_embeds)
         return pred
 
-    def predict_with_unconditional_scale(self, x, t, clip_embed, volume_feats, x_concat, unconditional_scale):
+    def predict_with_unconditional_scale(self, x, t, clip_embed, volume_feats, x_concat, unconditional_scale, att_masks=None, plucker_embeds=None):
+
+
+        att_masks = att_masks.repeat_interleave(2, 0)
+        plucker_embeds = plucker_embeds.repeat_interleave(2, 0)
+
         x_ = torch.cat([x] * 2, 0)
         t_ = torch.cat([t] * 2, 0)
         clip_embed_ = torch.cat([clip_embed, torch.zeros_like(clip_embed)], 0)
@@ -118,7 +124,8 @@ class UNetWrapper(nn.Module):
             first_stage_scale_factor = 0.18215
             x_concat_[:, :4] = x_concat_[:, :4] / first_stage_scale_factor
         x_ = torch.cat([x_, x_concat_], 1)
-        s, s_uc = self.diffusion_model(x_, t_, clip_embed_, source_dict=v_).chunk(2)
+        # print(x.shape, att_masks.shape, plucker_embeds.shape)
+        s, s_uc = self.diffusion_model(x_, t_, clip_embed_, source_dict=v_, att_masks=att_masks.to(x_.device), plucker_embeds=plucker_embeds.to(x_.device)).chunk(2)
         s = s_uc + unconditional_scale * (s - s_uc)
         return s
 
@@ -427,8 +434,15 @@ class SyncMultiviewDiffusion(pl.LightningModule):
         image_input = batch['input_image'].permute(0, 3, 1, 2)
         elevation_input = batch['input_elevation'][:, 0] # b
         azimuth_input = batch['input_azimuth'][:, 0] # b
-        elevation_output = batch['target_elevation'][:,:] # B,N
-        azimuth_output = batch['target_azimuth'][:,:] # B,N
+
+        elevation_output = torch.full((self.view_num,), np.deg2rad(45)).to(self.device) # N  
+        if 'target_elevation' in batch:
+            elevation_output = batch['target_elevation'][:,:] # B,N
+
+        azimuth_output = torch.deg2rad(torch.arange(0, 360, 360 / self.view_num)) # B,N       
+        if 'target_azimuth' in batch:
+            azimuth_output = batch['target_azimuth'][:,:] # B,N
+
         x_input = self.encode_first_stage(image_input)
         input_info = {'image': image_input, 'input_elevation': elevation_input,\
                       'x': x_input, 'input_azimuth': azimuth_input,\
@@ -605,6 +619,8 @@ class SyncDDIMSampler:
         self.model = model
         self.ddpm_num_timesteps = model.num_timesteps
         self.latent_size = latent_size
+
+        ddim_num_steps = 50
         self._make_schedule(ddim_num_steps, ddim_discretize, ddim_eta)
         self.eta = ddim_eta
 
@@ -652,7 +668,7 @@ class SyncDDIMSampler:
         return x_prev
 
     @torch.no_grad()
-    def denoise_apply(self, x_target_noisy, input_info, clip_embed, time_steps, index, unconditional_scale, batch_view_num=1, is_step0=False):
+    def denoise_apply(self, x_target_noisy, input_info, clip_embed, time_steps, index, unconditional_scale, batch_view_num=1, is_step0=False, batch_att_masks=None, batch_plucker_embeds=None): 
         """
         @param x_target_noisy:   B,N,4,H,W
         @param input_info:
@@ -664,28 +680,58 @@ class SyncDDIMSampler:
         @param is_step0:         bool
         @return:
         """
-        x_input, elevation_input = input_info['x'], input_info['input_elevation']
+        x_input = input_info['x']
+        elevation_input, target_elevation = input_info['input_elevation'], input_info['target_elevation']
+        input_azimuth, target_azimuth = input_info['input_azimuth'], input_info['target_azimuth']
         B, N, C, H, W = x_target_noisy.shape
 
+        # print(N)
+
+        # for plucker
+        # print(B)
+        # input_elev, target_elev = elevation_input.to("cpu"), target_elevation.to("cpu")
+        # input_azim, target_azim = input_azimuth.to("cpu"), target_azimuth.to("cpu")
+        
+        # batch_att_masks, batch_plucker_embeds = [], []
+        # for i in range(B):
+        #     att_masks, plucker_embeds = [], []
+        #     for j in range(N):
+        #         elevations = [target_elev[j], input_elev[i]]
+        #         azimuths = [target_azim[j], input_azim[i]]
+        #         plc_batch = generate_batch(elevations, azimuths)
+        #         att_masks_, plucker_embeds_ = plc_batch["epi_constraint_masks"], plc_batch["plucker_embeds"]
+        #         att_masks.append(att_masks_)
+        #         plucker_embeds.append(plucker_embeds_)
+        #     batch_att_masks.append(torch.stack(att_masks))
+        #     batch_plucker_embeds.append(torch.stack(plucker_embeds))
+        # batch_att_masks = torch.cat(batch_att_masks, 0)
+        # batch_plucker_embeds = torch.cat(batch_plucker_embeds, 0)
+
         # construct source data
-        v_embed = self.model.get_viewpoint_embedding(B, elevation_input) # B,N,v_dim
+        # print(elevation_input.shape, target_elevation.shape, input_azimuth.shape)
+        v_embed = self.model.get_viewpoint_embedding(B, elevation_input, target_elevation[0].repeat(B), input_azimuth) # B,N,v_dim
         t_embed = self.model.embed_time(time_steps)  # B,t_dim
         spatial_volume = self.model.spatial_volume.construct_spatial_volume(x_target_noisy, t_embed, v_embed, self.model.poses, self.model.Ks)
 
         e_t = []
         target_indices = torch.arange(N) # N
-        for ni in range(0, N, batch_view_num):
+        for i, ni in enumerate(range(0, N, batch_view_num)):
+
             x_target_noisy_ = x_target_noisy[:, ni:ni + batch_view_num]
             VN = x_target_noisy_.shape[1]
             x_target_noisy_ = x_target_noisy_.reshape(B*VN,C,H,W)
+
+            att_masks = batch_att_masks[B*VN*i:B*VN*(i+1), ...]
+            plucker_embeds = batch_plucker_embeds[B*VN*i:B*VN*(i+1), ...]
 
             time_steps_ = repeat_to_batch(time_steps, B, VN)
             target_indices_ = target_indices[ni:ni+batch_view_num].unsqueeze(0).repeat(B,1)
             clip_embed_, volume_feats_, x_concat_ = self.model.get_target_view_feats(x_input, spatial_volume, clip_embed, t_embed, v_embed, target_indices_)
             if unconditional_scale!=1.0:
-                noise = self.model.model.predict_with_unconditional_scale(x_target_noisy_, time_steps_, clip_embed_, volume_feats_, x_concat_, unconditional_scale)
+                # print(f"unconditional scale {unconditional_scale:.1f}") 
+                noise = self.model.model.predict_with_unconditional_scale(x_target_noisy_, time_steps_, clip_embed_, volume_feats_, x_concat_, unconditional_scale, att_masks=att_masks, plucker_embeds=plucker_embeds)
             else:
-                noise = self.model.model(x_target_noisy_, time_steps_, clip_embed_, volume_feats_, x_concat_, is_train=False)
+                noise = self.model.model(x_target_noisy_, time_steps_, clip_embed_, volume_feats_, x_concat_, is_train=False, att_masks=att_masks, plucker_embeds=plucker_embeds)   
             e_t.append(noise.view(B,VN,4,H,W))
 
         e_t = torch.cat(e_t, 1)
@@ -709,6 +755,32 @@ class SyncDDIMSampler:
         device = self.model.device
         x_target_noisy = torch.randn([B, N, C, H, W], device=device)
 
+        elevation_input, target_elevation = input_info['input_elevation'], input_info['target_elevation']
+        input_azimuth, target_azimuth = input_info['input_azimuth'], input_info['target_azimuth']
+        B, N, C, H, W = x_target_noisy.shape
+
+        # print(N)
+
+        # for plucker
+        # print(B)
+        input_elev, target_elev = elevation_input.to("cpu"), target_elevation.to("cpu")
+        input_azim, target_azim = input_azimuth.to("cpu"), target_azimuth.to("cpu")
+        
+        batch_att_masks, batch_plucker_embeds = [], []
+        for i in range(B):
+            att_masks, plucker_embeds = [], []
+            for j in range(N):
+                elevations = [target_elev[j], input_elev[i]]
+                azimuths = [target_azim[j], input_azim[i]]
+                plc_batch = generate_batch(elevations, azimuths)
+                att_masks_, plucker_embeds_ = plc_batch["epi_constraint_masks"], plc_batch["plucker_embeds"]
+                att_masks.append(att_masks_)
+                plucker_embeds.append(plucker_embeds_)
+            batch_att_masks.append(torch.stack(att_masks))
+            batch_plucker_embeds.append(torch.stack(plucker_embeds))
+        batch_att_masks = torch.cat(batch_att_masks, 0)
+        batch_plucker_embeds = torch.cat(batch_plucker_embeds, 0)
+
         timesteps = self.ddim_timesteps
         intermediates = {'x_inter': []}
         time_range = np.flip(timesteps)
@@ -718,7 +790,7 @@ class SyncDDIMSampler:
         for i, step in enumerate(iterator):
             index = total_steps - i - 1 # index in ddim state
             time_steps = torch.full((B,), step, device=device, dtype=torch.long)
-            x_target_noisy = self.denoise_apply(x_target_noisy, input_info, clip_embed, time_steps, index, unconditional_scale, batch_view_num=batch_view_num, is_step0=index==0)
+            x_target_noisy = self.denoise_apply(x_target_noisy, input_info, clip_embed, time_steps, index, unconditional_scale, batch_view_num=batch_view_num, is_step0=index==0, batch_att_masks=batch_att_masks, batch_plucker_embeds=batch_plucker_embeds)
             if index % log_every_t == 0 or index == total_steps - 1:
                 intermediates['x_inter'].append(x_target_noisy)
 
