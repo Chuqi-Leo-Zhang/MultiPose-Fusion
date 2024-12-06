@@ -8,6 +8,8 @@ import pytorch_lightning as pl
 
 from omegaconf import OmegaConf
 from PIL import Image
+from PIL import ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 from pytorch_lightning import seed_everything
 from pytorch_lightning.strategies import DDPStrategy
@@ -34,11 +36,11 @@ def get_parser(**parser_kwargs):
             raise argparse.ArgumentTypeError("Boolean value expected.")
 
     parser = argparse.ArgumentParser(**parser_kwargs)
-    parser.add_argument("-r", "--resume", dest='resume', action='store_true', default=False)
+    parser.add_argument("-r", "--resume", dest='resume', action='store_true', default=True)
     parser.add_argument("-b", "--base", type=str, default='configs/syncdreamer-training.yaml',)
     parser.add_argument("-l", "--logdir", type=str, default="ckpt/logs", help="directory for logging data", )
     parser.add_argument("-c", "--ckptdir", type=str, default="ckpt/models", help="directory for checkpoint data", )
-    parser.add_argument("-s", "--seed", type=int, default=6033, help="seed for seed_everything", )
+    parser.add_argument("-s", "--seed", type=int, default=6033, help="seed for seed_everything", ) #27, 6033, 31
     parser.add_argument("--finetune_from", type=str, default="/cfs-cq-dcc/rondyliu/models/sd-image-conditioned-v2.ckpt", help="path to checkpoint to load model state from" )
     parser.add_argument("--gpus", type=str, default='0,')
     return parser
@@ -222,7 +224,9 @@ if __name__ == "__main__":
     cfgdir = os.path.join(logdir, "configs")
 
     if opt.resume:
+        print(f"Resuming from pretrain")
         ckpt = os.path.join(ckptdir, "last.ckpt")
+        # ckpt = "/home/zhuominc/leo/SyncDreamerCustomized/ckpt/syncdreamer-pretrain.ckpt"
         opt.resume_from_checkpoint = ckpt
         opt.finetune_from = "" # disable finetune checkpoint
 
