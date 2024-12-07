@@ -239,7 +239,7 @@ class SyncMultiviewDiffusion(pl.LightningModule):
                  drop_conditions=False, drop_scheme='default',
                  clip_image_encoder_path="/apdcephfs/private_rondyliu/projects/clip/ViT-L-14.pt",
                  sample_type='ddim', sample_steps=200,
-                 elevation_target=30):
+                 elevation_target=70):
         super().__init__()
 
         self.elevation_target = elevation_target
@@ -434,19 +434,29 @@ class SyncMultiviewDiffusion(pl.LightningModule):
         image_input = batch['input_image'].permute(0, 3, 1, 2)
         elevation_input = batch['input_elevation'][:, 0] # b
         azimuth_input = batch['input_azimuth'][:, 0] # b
-
-        elevation_output = torch.full((self.view_num,), np.deg2rad(45)).to(self.device) # N  
+        
         if 'target_elevation' in batch:
             elevation_output = batch['target_elevation'][:,:] # B,N
-
-        azimuth_output = torch.deg2rad(torch.arange(0, 360, 360 / self.view_num)) # B,N       
+        else:
+            elevation_output = torch.full((self.view_num,), np.deg2rad(60)).to(self.device) # N  
+             
         if 'target_azimuth' in batch:
             azimuth_output = batch['target_azimuth'][:,:] # B,N
+        else:
+            azimuth_output = torch.deg2rad(torch.arange(0, 360, 360 / self.view_num)) # B,N  
+
+        if 'target_poses' in batch:
+            poses_target = batch['target_poses'] # B,N,3,4
+        else:
+            poses_target = read_pickle(f'meta_info/camera-{self.view_num}-{self.elevation_target}.pkl')[-1]
+            poses_target = torch.from_numpy(poses_target.astype(np.float32)).to(self.device) # B,N,3,4
 
         x_input = self.encode_first_stage(image_input)
         input_info = {'image': image_input, 'input_elevation': elevation_input,\
                       'x': x_input, 'input_azimuth': azimuth_input,\
-                      'target_elevation': elevation_output, 'target_azimuth': azimuth_output}
+                      'target_elevation': elevation_output, 'target_azimuth': azimuth_output,
+                      'target_poses': poses_target}
+        
         with torch.no_grad():
             clip_embed = self.clip_image_encoder.encode(image_input)
         return x, clip_embed, input_info
@@ -456,7 +466,7 @@ class SyncMultiviewDiffusion(pl.LightningModule):
         t_embed = self.time_embed(t_embed) # B,TED
         return t_embed
 
-    def get_target_view_feats(self, x_input, spatial_volume, clip_embed, t_embed, v_embed, target_index):
+    def get_target_view_feats(self, x_input, spatial_volume, clip_embed, t_embed, v_embed, target_index, target_poses):
         """
         @param x_input:        B,4,H,W
         @param spatial_volume: B,C,V,V,V
@@ -468,7 +478,7 @@ class SyncMultiviewDiffusion(pl.LightningModule):
             tensors of size B*TN,*
         """
         B, _, H, W = x_input.shape
-        frustum_volume_feats, frustum_volume_depth = self.spatial_volume.construct_view_frustum_volume(spatial_volume, t_embed, v_embed, self.poses, self.Ks, target_index)
+        frustum_volume_feats, frustum_volume_depth = self.spatial_volume.construct_view_frustum_volume(spatial_volume, t_embed, v_embed, target_poses, self.Ks, target_index)
 
         # clip
         TN = target_index.shape[1]
@@ -495,6 +505,7 @@ class SyncMultiviewDiffusion(pl.LightningModule):
         ## added for plucker embedding
         input_elev, target_elev = input_info['input_elevation'].to("cpu"), input_info['target_elevation'][torch.arange(B)[:,None], target_index][:,0].to("cpu")
         input_azim, target_azim = input_info['input_azimuth'].to("cpu"), input_info['target_azimuth'][torch.arange(B)[:,None], target_index][:,0].to("cpu")
+        target_poses = input_info['target_poses'][torch.arange(B)[:,None], target_index][:,0]
         
         att_masks, plucker_embeds = [], [] 
         for i in range(B):
@@ -511,9 +522,10 @@ class SyncMultiviewDiffusion(pl.LightningModule):
         v_embed = self.get_viewpoint_embedding(B, input_elev.to(self.device), target_elev.to(self.device), input_azim.to(self.device)) # N,v_dim
 
         t_embed = self.embed_time(time_steps)
-        spatial_volume = self.spatial_volume.construct_spatial_volume(x_noisy, t_embed, v_embed, self.poses, self.Ks)
+        # change the camera pose
+        spatial_volume = self.spatial_volume.construct_spatial_volume(x_noisy, t_embed, v_embed, target_poses, self.Ks)
 
-        clip_embed, volume_feats, x_concat = self.get_target_view_feats(input_info['x'], spatial_volume, clip_embed, t_embed, v_embed, target_index)
+        clip_embed, volume_feats, x_concat = self.get_target_view_feats(input_info['x'], spatial_volume, clip_embed, t_embed, v_embed, target_index, target_poses)
 
         x_noisy_ = x_noisy[torch.arange(B)[:,None], target_index][:,0] # B,4,H,W
         noise_predict = self.model(x_noisy_, time_steps, clip_embed, volume_feats, x_concat, is_train=True, att_masks=att_masks, plucker_embeds=plucker_embeds) # B,4,H,W
@@ -683,6 +695,7 @@ class SyncDDIMSampler:
         x_input = input_info['x']
         elevation_input, target_elevation = input_info['input_elevation'], input_info['target_elevation']
         input_azimuth, target_azimuth = input_info['input_azimuth'], input_info['target_azimuth']
+        target_poses = input_info['target_poses']
         B, N, C, H, W = x_target_noisy.shape
 
         # print(N)
@@ -711,7 +724,7 @@ class SyncDDIMSampler:
         # print(elevation_input.shape, target_elevation.shape, input_azimuth.shape)
         v_embed = self.model.get_viewpoint_embedding(B, elevation_input, target_elevation[0].repeat(B), input_azimuth) # B,N,v_dim
         t_embed = self.model.embed_time(time_steps)  # B,t_dim
-        spatial_volume = self.model.spatial_volume.construct_spatial_volume(x_target_noisy, t_embed, v_embed, self.model.poses, self.model.Ks)
+        spatial_volume = self.model.spatial_volume.construct_spatial_volume(x_target_noisy, t_embed, v_embed, target_poses, self.model.Ks)
 
         e_t = []
         target_indices = torch.arange(N) # N
@@ -721,12 +734,16 @@ class SyncDDIMSampler:
             VN = x_target_noisy_.shape[1]
             x_target_noisy_ = x_target_noisy_.reshape(B*VN,C,H,W)
 
-            att_masks = batch_att_masks[B*VN*i:B*VN*(i+1), ...]
-            plucker_embeds = batch_plucker_embeds[B*VN*i:B*VN*(i+1), ...]
+            # att_masks = batch_att_masks[B*VN*i:B*VN*(i+1), ...]
+            # plucker_embeds = batch_plucker_embeds[B*VN*i:B*VN*(i+1), ...]
+            att_masks = batch_att_masks[:, ni:ni+batch_view_num]
+            plucker_embeds = batch_plucker_embeds[:, ni:ni+batch_view_num]
+            att_masks = att_masks.reshape(-1, *att_masks.shape[2:])
+            plucker_embeds = plucker_embeds.reshape(-1, *plucker_embeds.shape[2:])
 
             time_steps_ = repeat_to_batch(time_steps, B, VN)
             target_indices_ = target_indices[ni:ni+batch_view_num].unsqueeze(0).repeat(B,1)
-            clip_embed_, volume_feats_, x_concat_ = self.model.get_target_view_feats(x_input, spatial_volume, clip_embed, t_embed, v_embed, target_indices_)
+            clip_embed_, volume_feats_, x_concat_ = self.model.get_target_view_feats(x_input, spatial_volume, clip_embed, t_embed, v_embed, target_indices_, target_poses)  
             if unconditional_scale!=1.0:
                 # print(f"unconditional scale {unconditional_scale:.1f}") 
                 noise = self.model.model.predict_with_unconditional_scale(x_target_noisy_, time_steps_, clip_embed_, volume_feats_, x_concat_, unconditional_scale, att_masks=att_masks, plucker_embeds=plucker_embeds)
@@ -759,10 +776,7 @@ class SyncDDIMSampler:
         input_azimuth, target_azimuth = input_info['input_azimuth'], input_info['target_azimuth']
         B, N, C, H, W = x_target_noisy.shape
 
-        # print(N)
-
-        # for plucker
-        # print(B)
+        # compute plucker
         input_elev, target_elev = elevation_input.to("cpu"), target_elevation.to("cpu")
         input_azim, target_azim = input_azimuth.to("cpu"), target_azimuth.to("cpu")
         
@@ -778,8 +792,8 @@ class SyncDDIMSampler:
                 plucker_embeds.append(plucker_embeds_)
             batch_att_masks.append(torch.stack(att_masks))
             batch_plucker_embeds.append(torch.stack(plucker_embeds))
-        batch_att_masks = torch.cat(batch_att_masks, 0)
-        batch_plucker_embeds = torch.cat(batch_plucker_embeds, 0)
+        batch_att_masks = torch.stack(batch_att_masks)
+        batch_plucker_embeds = torch.stack(batch_plucker_embeds)
 
         timesteps = self.ddim_timesteps
         intermediates = {'x_inter': []}

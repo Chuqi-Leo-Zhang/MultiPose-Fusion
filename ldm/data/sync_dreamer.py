@@ -83,6 +83,7 @@ class SyncDreamerTrainData(Dataset):
         batch_input_azimuth = []
         batch_target_elevation = []
         batch_target_azimuth = []
+        batch_target_poses = [] 
 
         for target_dir, input_dir in zip(target_images_dir, input_images_dir):
             target_images = []
@@ -98,8 +99,11 @@ class SyncDreamerTrainData(Dataset):
             K, azimuths, elevations, distances, cam_poses = read_pickle(os.path.join(target_dir, f'meta.pkl'))
             target_elevation = torch.from_numpy(elevations.astype(np.float32))
             target_azimuth = torch.from_numpy(azimuths.astype(np.float32))
+            target_poses = torch.from_numpy(cam_poses.astype(np.float32))
             batch_target_elevation.append(target_elevation) 
-            batch_target_azimuth.append(target_azimuth) 
+            batch_target_azimuth.append(target_azimuth)
+            batch_target_poses.append(target_poses)
+
 
             K, azimuths, elevations, distances, cam_poses = read_pickle(os.path.join(input_dir, f'meta.pkl'))
             input_elevation = torch.from_numpy(elevations[start_view_index:start_view_index+1].astype(np.float32))
@@ -109,7 +113,8 @@ class SyncDreamerTrainData(Dataset):
     
         return {"target_image": torch.stack(batch_target, 0), "input_image": torch.stack(batch_input, 0),\
                 "input_elevation": torch.stack(batch_input_elevation, 0), "input_azimuth": torch.stack(batch_input_azimuth, 0),\
-                "target_elevation": torch.stack(batch_target_elevation, 0), "target_azimuth": torch.stack(batch_target_azimuth, 0)}
+                "target_elevation": torch.stack(batch_target_elevation, 0), "target_azimuth": torch.stack(batch_target_azimuth, 0),\
+                "target_poses": torch.stack(batch_target_poses, 0)}
 
 
 class SyncDreamerEvalData(Dataset):
