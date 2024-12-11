@@ -1,12 +1,18 @@
 # MultiPose Fusion
 MultiPose Fusion: Single-view 3D Reconstruction Using Diffusion Models with Flexible Camera Pose
 
+Pipeline of our method:
+
 ![](assets/diagram.png)
-===================================================
-<h4>
-Chuqi Zhang, Likeer Xu, Rouzbeh Amin Tafreshi, Ruiyi Lian
+Results:
 
 ![](assets/our_nvs.jpeg)
+===================================================
+<h4>
+
+Chuqi Zhang, Likeer Xu, Rouzbeh Amin Tafreshi, Ruiyi Lian
+
+
 
 ## Filtered High-Quality Objaverse
 If you are looking for the objaverse assets we used to train model, you can find that list here: [filtered_objaverse.txt](https://github.com/Chuqi-Leo-Zhang/MultiPose-Fusion/blob/main/data/objaverse_filtered.txt)
@@ -40,7 +46,7 @@ MultiPose-Fusion
 |-- raymarching
 ...
 ```
-The most crucial folders for this repository is as above. In configs we put all our configurations for training & inference. In ldm it has all modified models w.r.t. the diffusion models. Raymarching is a package you need to install with:
+The most crucial folders for this repository are as above. In configs we put all our configurations for training & inference. In ldm it has all modified models w.r.t. the diffusion models. Raymarching is a package you need to install with:
 ```bash
 cd raymarching & pip install .
 ```
