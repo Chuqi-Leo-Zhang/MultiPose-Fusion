@@ -100,12 +100,11 @@ class UNetWrapper(nn.Module):
             x_concat_ = x_concat
 
         x = torch.cat([x, x_concat_], 1)
-        # print(x.shape, att_masks.shape, plucker_embeds.shape)
+
         pred = self.diffusion_model(x, t, clip_embed, source_dict=volume_feats, att_masks=att_masks, plucker_embeds=plucker_embeds)
         return pred
 
     def predict_with_unconditional_scale(self, x, t, clip_embed, volume_feats, x_concat, unconditional_scale, att_masks=None, plucker_embeds=None):
-
 
         att_masks = att_masks.repeat_interleave(2, 0)
         plucker_embeds = plucker_embeds.repeat_interleave(2, 0)
@@ -124,7 +123,7 @@ class UNetWrapper(nn.Module):
             first_stage_scale_factor = 0.18215
             x_concat_[:, :4] = x_concat_[:, :4] / first_stage_scale_factor
         x_ = torch.cat([x_, x_concat_], 1)
-        # print(x.shape, att_masks.shape, plucker_embeds.shape)
+
         s, s_uc = self.diffusion_model(x_, t_, clip_embed_, source_dict=v_, att_masks=att_masks.to(x_.device), plucker_embeds=plucker_embeds.to(x_.device)).chunk(2)
         s = s_uc + unconditional_scale * (s - s_uc)
         return s
@@ -172,10 +171,8 @@ class SpatialVolumeNet(nn.Module):
 
         # encode source features
         t_embed_ = t_embed.view(B, 1, self.time_dim).repeat(1, N, 1).view(B, N, self.time_dim)
-        # v_embed_ = v_embed.view(1, N, self.view_dim).repeat(B, 1, 1).view(B, N, self.view_dim)
         v_embed_ = v_embed
         target_Ks = target_Ks.unsqueeze(0).repeat(B, 1, 1, 1)
-        target_poses = target_poses.unsqueeze(0).repeat(B, 1, 1, 1)
 
         # extract 2D image features
         spatial_volume_feats = []
@@ -208,7 +205,7 @@ class SpatialVolumeNet(nn.Module):
         @param target_indices:    B,TN
         @return: B*TN,C,H,W
         """
-        B, TN = target_indices.shape
+        B, TN = target_indices.shape 
         H, W = self.frustum_volume_size, self.frustum_volume_size
         D = self.frustum_volume_depth
         V = self.spatial_volume_size
@@ -216,8 +213,11 @@ class SpatialVolumeNet(nn.Module):
         near = torch.ones(B * TN, 1, H, W, dtype=spatial_volume.dtype, device=spatial_volume.device) * self.default_origin_depth - self.frustum_volume_length
         far = torch.ones(B * TN, 1, H, W, dtype=spatial_volume.dtype, device=spatial_volume.device) * self.default_origin_depth + self.frustum_volume_length
 
+
+        poses_ = poses[torch.arange(B)[:,None], target_indices].view(B*TN, 3, 4) # B*TN,3,4 
         target_indices = target_indices.view(B*TN) # B*TN
-        poses_ = poses[target_indices] # B*TN,3,4
+        # poses_ = poses[target_indices] # B*TN,3,4
+        
         Ks_ = Ks[target_indices] # B*TN,3,4
         volume_xyz, volume_depth = create_target_volume(D, self.frustum_volume_size, self.input_image_size, poses_, Ks_, near, far) # B*TN,3 or 1,D,H,W
 
@@ -239,7 +239,7 @@ class SyncMultiviewDiffusion(pl.LightningModule):
                  drop_conditions=False, drop_scheme='default',
                  clip_image_encoder_path="/apdcephfs/private_rondyliu/projects/clip/ViT-L-14.pt",
                  sample_type='ddim', sample_steps=200,
-                 elevation_target=70):
+                 elevation_target=50):
         super().__init__()
 
         self.elevation_target = elevation_target
@@ -303,18 +303,6 @@ class SyncMultiviewDiffusion(pl.LightningModule):
         @param elevation_ref: B
         @return:
         """
-        # azimuth_input = self.azimuth[0].unsqueeze(0) # 1
-        # azimuth_target = self.azimuth # N
-        # elevation_input = -elevation_ref # note that zero123 use a negative elevation here!!!
-        # elevation_target = -np.deg2rad(self.elevation_target)
-        # d_e = elevation_target - elevation_input # B
-        # N = self.azimuth.shape[0]
-        # B = batch_size
-        # d_e = d_e.unsqueeze(1).repeat(1, N)
-        # d_a = azimuth_target - azimuth_input # N
-        # d_a = d_a.unsqueeze(0).repeat(B, 1)
-        # d_z = torch.zeros_like(d_a)
-        # embedding = torch.stack([d_e, torch.sin(d_a), torch.cos(d_a), d_z], -1) # B,N,4
 
         N = self.azimuth.shape[0]
         B = batch_size  
@@ -330,20 +318,6 @@ class SyncMultiviewDiffusion(pl.LightningModule):
         d_z = torch.zeros_like(d_a)
         embedding = torch.stack([d_e, torch.sin(d_a), torch.cos(d_a), d_z], -1) # B,N,4
         
-
-        # input_azimuth = self.azimuth[0].unsqueeze(0) # 1
-        # target_azimuth = self.azimuth # N
-        # input_elevation = -input_elevation # B
-        # target_elevation = -target_elevation # B
-        # d_e = target_elevation - input_elevation # B
-        # N = self.azimuth.shape[0]
-        # B = batch_size
-        # d_e = d_e.repeat(B, N)
-        # d_a = target_azimuth - input_azimuth # N
-        # d_a = d_a.unsqueeze(0).repeat(B, 1) 
-        # d_z = torch.zeros_like(d_a)
-        # embedding = torch.stack([d_e, torch.sin(d_a), torch.cos(d_a), d_z], -1) # B,N,4
-
         return embedding
 
     def _init_first_stage(self):
@@ -438,7 +412,7 @@ class SyncMultiviewDiffusion(pl.LightningModule):
         if 'target_elevation' in batch:
             elevation_output = batch['target_elevation'][:,:] # B,N
         else:
-            elevation_output = torch.full((self.view_num,), np.deg2rad(60)).to(self.device) # N  
+            elevation_output = torch.full((self.view_num,), np.deg2rad(self.elevation_target)).to(self.device) # N  
              
         if 'target_azimuth' in batch:
             azimuth_output = batch['target_azimuth'][:,:] # B,N
@@ -446,10 +420,16 @@ class SyncMultiviewDiffusion(pl.LightningModule):
             azimuth_output = torch.deg2rad(torch.arange(0, 360, 360 / self.view_num)) # B,N  
 
         if 'target_poses' in batch:
-            poses_target = batch['target_poses'] # B,N,3,4
+            # poses_target = batch['target_poses'] # B,N,3,4
+            B = image_input.shape[0]
+            poses_target = read_pickle(f'meta_info/camera-{self.view_num}-{self.elevation_target}.pkl')[-1]
+            poses_target = torch.from_numpy(poses_target.astype(np.float32)).to(self.device) # N,3,4
+            poses_target = poses_target.unsqueeze(0).repeat(B, 1, 1, 1) # B,N,3,4
         else:
             poses_target = read_pickle(f'meta_info/camera-{self.view_num}-{self.elevation_target}.pkl')[-1]
-            poses_target = torch.from_numpy(poses_target.astype(np.float32)).to(self.device) # B,N,3,4
+
+            poses_target = torch.from_numpy(poses_target.astype(np.float32)).to(self.device) # N,3,4
+            # poses_target = poses_target.unsqueeze(0).repeat(B, 1, 1, 1) # B,N,3,4   
 
         x_input = self.encode_first_stage(image_input)
         input_info = {'image': image_input, 'input_elevation': elevation_input,\
@@ -505,7 +485,7 @@ class SyncMultiviewDiffusion(pl.LightningModule):
         ## added for plucker embedding
         input_elev, target_elev = input_info['input_elevation'].to("cpu"), input_info['target_elevation'][torch.arange(B)[:,None], target_index][:,0].to("cpu")
         input_azim, target_azim = input_info['input_azimuth'].to("cpu"), input_info['target_azimuth'][torch.arange(B)[:,None], target_index][:,0].to("cpu")
-        target_poses = input_info['target_poses'][torch.arange(B)[:,None], target_index][:,0]
+        target_poses = input_info['target_poses']
         
         att_masks, plucker_embeds = [], [] 
         for i in range(B):
@@ -697,31 +677,11 @@ class SyncDDIMSampler:
         input_azimuth, target_azimuth = input_info['input_azimuth'], input_info['target_azimuth']
         target_poses = input_info['target_poses']
         B, N, C, H, W = x_target_noisy.shape
-
-        # print(N)
+        target_poses = target_poses.unsqueeze(0).repeat(B, 1, 1, 1) # B,N,3,4   
 
         # for plucker
-        # print(B)
-        # input_elev, target_elev = elevation_input.to("cpu"), target_elevation.to("cpu")
-        # input_azim, target_azim = input_azimuth.to("cpu"), target_azimuth.to("cpu")
-        
-        # batch_att_masks, batch_plucker_embeds = [], []
-        # for i in range(B):
-        #     att_masks, plucker_embeds = [], []
-        #     for j in range(N):
-        #         elevations = [target_elev[j], input_elev[i]]
-        #         azimuths = [target_azim[j], input_azim[i]]
-        #         plc_batch = generate_batch(elevations, azimuths)
-        #         att_masks_, plucker_embeds_ = plc_batch["epi_constraint_masks"], plc_batch["plucker_embeds"]
-        #         att_masks.append(att_masks_)
-        #         plucker_embeds.append(plucker_embeds_)
-        #     batch_att_masks.append(torch.stack(att_masks))
-        #     batch_plucker_embeds.append(torch.stack(plucker_embeds))
-        # batch_att_masks = torch.cat(batch_att_masks, 0)
-        # batch_plucker_embeds = torch.cat(batch_plucker_embeds, 0)
 
         # construct source data
-        # print(elevation_input.shape, target_elevation.shape, input_azimuth.shape)
         v_embed = self.model.get_viewpoint_embedding(B, elevation_input, target_elevation[0].repeat(B), input_azimuth) # B,N,v_dim
         t_embed = self.model.embed_time(time_steps)  # B,t_dim
         spatial_volume = self.model.spatial_volume.construct_spatial_volume(x_target_noisy, t_embed, v_embed, target_poses, self.model.Ks)
@@ -734,8 +694,6 @@ class SyncDDIMSampler:
             VN = x_target_noisy_.shape[1]
             x_target_noisy_ = x_target_noisy_.reshape(B*VN,C,H,W)
 
-            # att_masks = batch_att_masks[B*VN*i:B*VN*(i+1), ...]
-            # plucker_embeds = batch_plucker_embeds[B*VN*i:B*VN*(i+1), ...]
             att_masks = batch_att_masks[:, ni:ni+batch_view_num]
             plucker_embeds = batch_plucker_embeds[:, ni:ni+batch_view_num]
             att_masks = att_masks.reshape(-1, *att_masks.shape[2:])
@@ -743,9 +701,8 @@ class SyncDDIMSampler:
 
             time_steps_ = repeat_to_batch(time_steps, B, VN)
             target_indices_ = target_indices[ni:ni+batch_view_num].unsqueeze(0).repeat(B,1)
-            clip_embed_, volume_feats_, x_concat_ = self.model.get_target_view_feats(x_input, spatial_volume, clip_embed, t_embed, v_embed, target_indices_, target_poses)  
+            clip_embed_, volume_feats_, x_concat_ = self.model.get_target_view_feats(x_input, spatial_volume, clip_embed, t_embed, v_embed, target_indices_, target_poses)
             if unconditional_scale!=1.0:
-                # print(f"unconditional scale {unconditional_scale:.1f}") 
                 noise = self.model.model.predict_with_unconditional_scale(x_target_noisy_, time_steps_, clip_embed_, volume_feats_, x_concat_, unconditional_scale, att_masks=att_masks, plucker_embeds=plucker_embeds)
             else:
                 noise = self.model.model(x_target_noisy_, time_steps_, clip_embed_, volume_feats_, x_concat_, is_train=False, att_masks=att_masks, plucker_embeds=plucker_embeds)   
@@ -792,8 +749,8 @@ class SyncDDIMSampler:
                 plucker_embeds.append(plucker_embeds_)
             batch_att_masks.append(torch.stack(att_masks))
             batch_plucker_embeds.append(torch.stack(plucker_embeds))
-        batch_att_masks = torch.stack(batch_att_masks)
-        batch_plucker_embeds = torch.stack(batch_plucker_embeds)
+        batch_att_masks = torch.stack(batch_att_masks).to(device)
+        batch_plucker_embeds = torch.stack(batch_plucker_embeds).to(device)
 
         timesteps = self.ddim_timesteps
         intermediates = {'x_inter': []}

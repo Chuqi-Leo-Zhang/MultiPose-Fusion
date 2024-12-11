@@ -165,8 +165,7 @@ class SyncDreamerDataset(pl.LightningDataModule):
     def train_dataloader(self):
         sampler = DistributedSampler(self.train_dataset, seed=self.seed)
         return wds.WebLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False, sampler=sampler, collate_fn=self.train_dataset.collate_fn)
-        # return wds.WebLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False, sampler=sampler)
-
+        
     def val_dataloader(self):
         loader = wds.WebLoader(self.val_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False)
         return loader

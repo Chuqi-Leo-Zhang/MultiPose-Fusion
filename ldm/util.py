@@ -274,7 +274,7 @@ class AdamWwithEMAandWings(optim.Optimizer):
 
         return loss
 
-def prepare_inputs(image_path, elevation_input, azimuth, crop_size=-1, image_size=256):
+def prepare_inputs(image_path, elevation_input, azimuth=0, crop_size=-1, image_size=256):
     image_input = Image.open(image_path)
 
     if crop_size!=-1:
